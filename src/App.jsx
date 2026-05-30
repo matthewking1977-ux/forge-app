@@ -324,13 +324,46 @@ function Home({ water, addWater, whoop }) {
 function Train({ whoop }) {
   const [workout,setWorkout]=useState(null);
   const [loading,setLoading]=useState(false);
-  const [done,setDone]=useState({});
+  const [setsDone,setSetsDone]=useState({});      // {exIdx: numSetsCompleted}
+  const [restTimer,setRestTimer]=useState(null);  // {secondsLeft, totalSeconds, exerciseName, setNum, totalSets, nextUp}
   const [overrideFocus,setOverrideFocus]=useState(null);
   const [showPicker,setShowPicker]=useState(false);
   const dow=new Date().getDay();
   const scheduled=SCHEDULE[dow];
   const isRest=!scheduled;
   const active=overrideFocus||(scheduled?{id:scheduled.focus,sub:scheduled.muscles}:null);
+
+  // Rest countdown
+  useEffect(()=>{
+    if(!restTimer||restTimer.secondsLeft<=0){
+      if(restTimer?.secondsLeft===0) setRestTimer(null);
+      return;
+    }
+    const t=setTimeout(()=>setRestTimer(r=>r?{...r,secondsLeft:r.secondsLeft-1}:null),1000);
+    return()=>clearTimeout(t);
+  },[restTimer]);
+
+  const parseRest=rest=>{
+    if(!rest)return 60;
+    const m=rest.match(/(\d+)\s*min/);if(m)return parseInt(m[1])*60;
+    const s=rest.match(/(\d+)/);return s?parseInt(s[1]):60;
+  };
+
+  const tapSet=(exIdx,exercise,exercises)=>{
+    const done=setsDone[exIdx]||0;
+    if(done>=exercise.sets)return;
+    const newDone=done+1;
+    setSetsDone(s=>({...s,[exIdx]:newDone}));
+    const isLastSet=newDone>=exercise.sets;
+    const isLastExercise=exIdx>=exercises.length-1;
+    if(!isLastSet||!isLastExercise){
+      const secs=parseRest(exercise.rest);
+      const nextUp=!isLastSet
+        ?`Set ${newDone+1} of ${exercise.sets} — ${exercise.name}`
+        :exercises[exIdx+1]?.name||'Cool-down';
+      setRestTimer({secondsLeft:secs,totalSeconds:secs,exerciseName:exercise.name,setNum:newDone,totalSets:exercise.sets,nextUp});
+    }
+  };
 
   // ── Hardcoded fallback workouts (used when API fails) ──────────────────
   const FALLBACKS = {
@@ -424,7 +457,7 @@ function Train({ whoop }) {
 
   const generate=async(fo)=>{
     const f=fo||active; if(!f)return;
-    setLoading(true);setWorkout(null);setDone({});setShowPicker(false);
+    setLoading(true);setWorkout(null);setSetsDone({});setRestTimer(null);setShowPicker(false);
     const bonus=!scheduled||(overrideFocus&&overrideFocus.id!==scheduled?.focus);
     const recovery=whoop.recovery;
 
@@ -437,9 +470,9 @@ function Train({ whoop }) {
     let lastError = "";
     for(let attempt=0; attempt<2; attempt++){
       try{
-        const res=await fetch("https://api.anthropic.com/v1/messages",{
+        const res=await fetch("/api/claude",{
           method:"POST",
-          headers:{"Content-Type":"application/json","x-api-key":import.meta.env.VITE_ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+          headers:{"Content-Type":"application/json"},
           body:JSON.stringify({
             model:"claude-sonnet-4-20250514",
             max_tokens:1200,
@@ -493,15 +526,47 @@ function Train({ whoop }) {
     setLoading(false);
   };
 
-  const toggle=i=>setDone(d=>({...d,[i]:!d[i]}));
-  const total=workout?.exercises?.length||0;
-  const count=Object.values(done).filter(Boolean).length;
-  const allDone=total>0&&count===total;
+  const totalSets=workout?.exercises?.reduce((a,ex)=>a+ex.sets,0)||0;
+  const doneSets=workout?.exercises?.reduce((a,ex,i)=>a+Math.min(setsDone[i]||0,ex.sets),0)||0;
+  const allDone=totalSets>0&&doneSets===totalSets;
   const acColor=active?fClr(active.id):C.muted;
 
   return (
     <div style={{padding:"0 20px 100px"}}>
-      {/* Header */}
+
+      {/* ── Full-screen rest timer overlay ── */}
+      {restTimer&&(
+        <div style={{
+          position:"fixed",inset:0,zIndex:200,background:C.bg,
+          display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+          padding:"60px 32px 48px",fontFamily:"'DM Sans',sans-serif"
+        }}>
+          {/* What just finished */}
+          <p style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.16em",marginBottom:8}}>Rest</p>
+          <p style={{fontSize:20,fontWeight:800,marginBottom:4,textAlign:"center"}}>{restTimer.exerciseName}</p>
+          <p style={{fontSize:14,color:C.muted,marginBottom:48}}>Set {restTimer.setNum} of {restTimer.totalSets} complete ✓</p>
+
+          {/* Countdown ring */}
+          <Ring val={restTimer.secondsLeft} max={restTimer.totalSeconds} size={220} sw={10} color={C.lime} bg={`${C.lime}15`}>
+            <Num size={80} color={restTimer.secondsLeft<=10?C.orange:C.lime}>{restTimer.secondsLeft}</Num>
+            <span style={{fontSize:13,color:C.muted,marginTop:2}}>seconds</span>
+          </Ring>
+
+          {/* Next up */}
+          <div style={{marginTop:48,textAlign:"center",padding:"18px 24px",
+            background:C.card,border:`1px solid ${C.border}`,borderRadius:16,width:"100%"}}>
+            <p style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:"0.12em",marginBottom:6}}>Up Next</p>
+            <p style={{fontSize:18,fontWeight:700,color:"white"}}>{restTimer.nextUp}</p>
+          </div>
+
+          {/* Skip */}
+          <button onClick={()=>setRestTimer(null)} style={{
+            marginTop:28,background:"transparent",border:`1px solid ${C.border}`,
+            color:C.muted,fontSize:15,fontWeight:600,padding:"14px 48px",
+            borderRadius:14,cursor:"pointer",fontFamily:"inherit"
+          }}>Skip Rest →</button>
+        </div>
+      )}
       <div style={{marginBottom:20}}>
         <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
           {active?<Badge color={acColor}>{active.id}</Badge>:<Badge color="rgba(255,255,255,0.4)">Rest Day</Badge>}
@@ -606,8 +671,8 @@ function Train({ whoop }) {
                   <p style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:32,letterSpacing:"0.06em",lineHeight:1}}>{workout.focus.toUpperCase()}</p>
                 </div>
                 <div style={{textAlign:"right"}}>
-                  <Num size={42} color={allDone?C.lime:"white"}>{count}/{total}</Num>
-                  <p style={{fontSize:10,color:"rgba(255,255,255,0.55)",textTransform:"uppercase",letterSpacing:"0.08em"}}>Done</p>
+                  <Num size={42} color={allDone?C.lime:"white"}>{doneSets}/{totalSets}</Num>
+                  <p style={{fontSize:10,color:"rgba(255,255,255,0.55)",textTransform:"uppercase",letterSpacing:"0.08em"}}>Sets</p>
                 </div>
               </div>
               {workout.recoveryNote&&(
@@ -635,35 +700,55 @@ function Train({ whoop }) {
           )}
 
           <SL>Main Session</SL>
-          {workout.exercises?.map((ex,i)=>(
-            <div key={i} onClick={()=>toggle(i)} style={{
-              background:done[i]?`${fClr(workout.focus)}0D`:C.card,
-              border:`1px solid ${done[i]?`${fClr(workout.focus)}35`:C.border}`,
-              borderRadius:16,padding:"14px 16px",marginBottom:10,cursor:"pointer",
-              transition:"all 0.2s",boxShadow:"0 2px 12px rgba(0,0,0,0.25)"
-            }}>
-              <div style={{display:"flex",alignItems:"center",gap:14}}>
-                <div style={{
-                  width:34,height:34,borderRadius:"50%",flexShrink:0,
-                  background:done[i]?grad(workout.focus):C.raised,
-                  border:`1px solid ${done[i]?`${fClr(workout.focus)}50`:C.border}`,
-                  display:"flex",alignItems:"center",justifyContent:"center"
-                }}>
-                  {done[i]
-                    ?<span style={{fontSize:15,fontWeight:900,color:"#000"}}>✓</span>
-                    :<Num size={14} color={C.muted}>{i+1}</Num>}
+          {workout.exercises?.map((ex,i)=>{
+            const done=setsDone[i]||0;
+            const isFullyDone=done>=ex.sets;
+            return (
+              <div key={i} style={{
+                background:isFullyDone?`${fClr(workout.focus)}0D`:C.card,
+                border:`1px solid ${isFullyDone?`${fClr(workout.focus)}35`:C.border}`,
+                borderRadius:16,padding:"16px",marginBottom:10,
+                boxShadow:"0 2px 12px rgba(0,0,0,0.25)"
+              }}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+                  <div style={{flex:1,paddingRight:12}}>
+                    <p style={{fontWeight:700,fontSize:16,color:isFullyDone?fClr(workout.focus):"white",marginBottom:3}}>{ex.name}</p>
+                    <p style={{fontSize:13,color:C.muted}}>{ex.reps} reps · {ex.rest} rest</p>
+                  </div>
+                  <div style={{textAlign:"right",flexShrink:0}}>
+                    <Num size={22} color={isFullyDone?fClr(workout.focus):C.muted}>{done}/{ex.sets}</Num>
+                    <p style={{fontSize:9,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em"}}>sets</p>
+                  </div>
                 </div>
-                <div style={{flex:1}}>
-                  <p style={{fontWeight:700,fontSize:16,color:done[i]?fClr(workout.focus):"white"}}>{ex.name}</p>
-                  <p style={{fontSize:13,color:C.muted,marginTop:3}}>{ex.sets} sets · {ex.reps} reps · {ex.rest} rest</p>
+                <div style={{display:"flex",gap:6,marginBottom:ex.tip?12:0}}>
+                  {Array.from({length:ex.sets}).map((_,si)=>{
+                    const isDone=si<done;
+                    const isNext=si===done;
+                    return (
+                      <button key={si} onClick={()=>isNext?tapSet(i,ex,workout.exercises):undefined}
+                        style={{
+                          flex:1,height:46,borderRadius:10,fontFamily:"inherit",
+                          background:isDone?fClr(workout.focus):isNext?`${fClr(workout.focus)}15`:C.raised,
+                          border:`2px solid ${isDone?fClr(workout.focus):isNext?`${fClr(workout.focus)}55`:C.border}`,
+                          color:isDone?"#000":isNext?fClr(workout.focus):C.muted,
+                          fontSize:isDone?16:13,fontWeight:700,
+                          cursor:isNext?"pointer":"default",
+                          boxShadow:isNext?`0 2px 14px ${fClr(workout.focus)}25`:"none",
+                          transition:"all 0.2s"
+                        }}>
+                        {isDone?"✓":`Set ${si+1}`}
+                      </button>
+                    );
+                  })}
                 </div>
+                {ex.tip&&(
+                  <p style={{fontSize:13,color:C.muted,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
+                    💡 {ex.tip}
+                  </p>
+                )}
               </div>
-              {ex.tip&&(
-                <p style={{fontSize:13,color:C.muted,marginTop:10,paddingLeft:48,
-                  borderTop:`1px solid ${C.border}`,paddingTop:10}}>💡 {ex.tip}</p>
-              )}
-            </div>
-          ))}
+            );
+          })}
 
           {workout.ageNote&&(
             <div style={{background:`${C.blue}0E`,border:`1px solid ${C.blue}22`,borderRadius:14,padding:"12px 16px",marginBottom:12}}>
@@ -711,8 +796,8 @@ function Progress() {
   const analyse=async()=>{
     setLoading(true);setAnalysis("");
     try{
-      const res=await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",headers:{"Content-Type":"application/json","x-api-key":import.meta.env.VITE_ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+      const res=await fetch("/api/claude",{
+        method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           model:"claude-sonnet-4-20250514",max_tokens:1000,
           system:"Fitness progress coach. Analyse body composition changes honestly and encouragingly. Matt is 49yo male, 82kg, goals: longevity, strength, definition. Be specific about muscle groups. 4-5 paragraphs. End with 3 numbered next steps.",
@@ -909,8 +994,8 @@ function Recovery({ whoop, setWhoop }) {
     setScanLoad(true);setScanResult(null);setScanError("");
     const imgs=shots.map(s=>({type:"image",source:{type:"base64",media_type:s.mime,data:s.b64}}));
     try{
-      const res=await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",headers:{"Content-Type":"application/json","x-api-key":import.meta.env.VITE_ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+      const res=await fetch("/api/claude",{
+        method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           model:"claude-sonnet-4-20250514",max_tokens:500,
           system:"Extract Whoop app metrics from screenshots. Return ONLY a raw JSON object — no markdown, no explanation, nothing else.",
@@ -940,8 +1025,8 @@ function Recovery({ whoop, setWhoop }) {
   const getAdvice=async()=>{
     setAdvLoad(true);setAdvice("");
     try{
-      const res=await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",headers:{"Content-Type":"application/json","x-api-key":import.meta.env.VITE_ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+      const res=await fetch("/api/claude",{
+        method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           model:"claude-sonnet-4-20250514",max_tokens:1000,
           system:"You are a recovery and performance coach for men over 45. Give clear, specific, practical advice. Write 3 short paragraphs covering: (1) recommended training intensity for today, (2) key nutrition focus, (3) one recovery action to prioritise.",
